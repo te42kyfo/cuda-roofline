@@ -57,6 +57,7 @@ __global__ void testfun(T* dA, T* dB, T* dC) {
 int main(int argc, char** argv) {
   typedef double dtype;
   const int M = 1000;
+  // PARN is a constant from the Makefile, set via -DPARN=X
   const int N = PARN;
   const int BLOCKSIZE = 256;
 
