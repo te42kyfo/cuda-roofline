@@ -1,5 +1,6 @@
 #include <cuComplex.h>
 #include <cuda_runtime.h>
+#include <omp.h>
 #include <sys/time.h>
 #include <iomanip>
 #include <iostream>
@@ -55,49 +56,66 @@ __global__ void testfun(T* dA, T* dB, T* dC) {
 
 int main(int argc, char** argv) {
   typedef double dtype;
-  const int M = 4000;
+  const int M = 1000;
   const int N = PARN;
   const int BLOCKSIZE = 256;
 
-  int deviceUsed;
-  cudaGetDevice(&deviceUsed);
-  cudaDeviceProp prop;
-  cudaGetDeviceProperties(&prop, deviceUsed);
-  int numBlocks;
+  int nDevices;
+  GPU_ERROR(cudaGetDeviceCount(&nDevices));
 
-  GPU_ERROR(cudaOccupancyMaxActiveBlocksPerMultiprocessor(
-      &numBlocks, testfun<dtype, N, M, BLOCKSIZE>, BLOCKSIZE, 0));
-  int blockCount = prop.multiProcessorCount * numBlocks;
+#pragma omp parallel num_threads(nDevices)
+  {
+    GPU_ERROR(cudaSetDevice(omp_get_thread_num()));
+#pragma omp barrier
+    int deviceId;
+    cudaGetDevice(&deviceId);
+    cudaDeviceProp prop;
+    cudaGetDeviceProperties(&prop, deviceId);
+    int numBlocks;
 
-  size_t data_len = (size_t)blockCount * BLOCKSIZE * M;
-  dtype* dA = NULL;
-  dtype* dB = NULL;
-  dtype* dC = NULL;
-  size_t iters = 10000;
+    GPU_ERROR(cudaOccupancyMaxActiveBlocksPerMultiprocessor(
+        &numBlocks, testfun<dtype, N, M, BLOCKSIZE>, BLOCKSIZE, 0));
+    int blockCount = prop.multiProcessorCount * numBlocks;
 
-  GPU_ERROR(cudaMalloc(&dA, data_len * sizeof(dtype)));
-  GPU_ERROR(cudaMalloc(&dB, data_len * sizeof(dtype)));
-  GPU_ERROR(cudaMalloc(&dC, data_len * sizeof(dtype)));
-  initKernel<<<blockCount, 256>>>(dA, data_len);
-  initKernel<<<blockCount, 256>>>(dB, data_len);
-  initKernel<<<blockCount, 256>>>(dC, data_len);
-  testfun<dtype, N, M, BLOCKSIZE><<<blockCount, BLOCKSIZE>>>(dA, dB, dC);
-  cudaDeviceSynchronize();
+    size_t data_len = (size_t)blockCount * BLOCKSIZE * M;
+    dtype* dA = NULL;
+    dtype* dB = NULL;
+    dtype* dC = NULL;
+    size_t iters = 200;
 
-  double start = dtime();
-  for (size_t iter = 0; iter < iters; iter++) {
+    GPU_ERROR(cudaMalloc(&dA, data_len * sizeof(dtype)));
+    GPU_ERROR(cudaMalloc(&dB, data_len * sizeof(dtype)));
+    GPU_ERROR(cudaMalloc(&dC, data_len * sizeof(dtype)));
+#pragma omp barrier
+    initKernel<<<blockCount, 256>>>(dA, data_len);
+    initKernel<<<blockCount, 256>>>(dB, data_len);
+    initKernel<<<blockCount, 256>>>(dC, data_len);
     testfun<dtype, N, M, BLOCKSIZE><<<blockCount, BLOCKSIZE>>>(dA, dB, dC);
+    cudaDeviceSynchronize();
+#pragma omp barrier
+
+    double start = dtime();
+    for (size_t iter = 0; iter < iters; iter++) {
+      testfun<dtype, N, M, BLOCKSIZE><<<blockCount, BLOCKSIZE>>>(dA, dB, dC);
+    }
+    cudaDeviceSynchronize();
+    double end = dtime();
+    GPU_ERROR(cudaGetLastError());
+
+#pragma omp barrier
+#pragma omp critical
+    {
+      cout << setprecision(3) << fixed << deviceId << " " << blockCount << " blocks   " << setw(3) << N
+           << " its      " << (2.0 + N * 2.0) / (2.0 * sizeof(dtype)) << " Fl/B      "
+           << setprecision(0) << setw(5)
+           << iters * 2 * data_len * sizeof(dtype) / (end - start) * 1.0e-9
+           << " GB/s    " << setw(6)
+           << iters * (2 + N * 2) * data_len / (end - start) * 1.0e-9
+           << " GF\n";
+    }
+    GPU_ERROR(cudaFree(dA));
+    GPU_ERROR(cudaFree(dB));
+    GPU_ERROR(cudaFree(dC));
   }
-  cudaDeviceSynchronize();
-  double end = dtime();
-  GPU_ERROR(cudaGetLastError());
-
-  cout << setw(3) << N << " " << setprecision(4) << setw(5)
-       << iters * 2 * data_len * sizeof(dtype) / (end - start) * 1.0e-9 << "  "
-       << setw(6) << iters * (2 + N * 2) * data_len / (end - start) * 1.0e-9
-       << "\n";
-
-  GPU_ERROR(cudaFree(dA));
-  GPU_ERROR(cudaFree(dB));
-  GPU_ERROR(cudaFree(dC));
+  cout << "\n";
 }
