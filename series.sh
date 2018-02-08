@@ -11,6 +11,8 @@ done
 
 wait
 
+echo "-- Finished Building --"
+
 for (( d=0 ; d<=$range; d+=8 ))
 do
     ./build/cu-roof$d
